@@ -1,0 +1,1021 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="TransitPulse — Real-time hyper-local hazard and delay alerts for urban commuters in Bengaluru." />
+  <title>TransitPulse — Live Hazard Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <style>
+    /* ── Reset & Tokens ─────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #0b0f19;
+      --bg-card: rgba(17, 24, 39, 0.85);
+      --bg-glass: rgba(30, 41, 59, 0.55);
+      --border-glass: rgba(100, 116, 139, 0.25);
+      --text-primary: #f1f5f9;
+      --text-secondary: #94a3b8;
+      --accent-blue: #38bdf8;
+      --accent-green: #34d399;
+      --accent-amber: #fbbf24;
+      --accent-red: #f87171;
+      --accent-red-bright: #ef4444;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow-lg: 0 8px 32px rgba(0,0,0,0.45);
+      --font: 'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: var(--font);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      overflow: hidden;
+    }
+
+    /* ── SCREEN SHAKE ────────────────────────────────────────── */
+    @keyframes screen-shake {
+      0%   { transform: translate(0, 0); }
+      10%  { transform: translate(-4px, -2px); }
+      20%  { transform: translate(4px, 2px); }
+      30%  { transform: translate(-3px, 3px); }
+      40%  { transform: translate(3px, -3px); }
+      50%  { transform: translate(-2px, 1px); }
+      60%  { transform: translate(2px, -1px); }
+      70%  { transform: translate(-1px, 2px); }
+      80%  { transform: translate(1px, -2px); }
+      90%  { transform: translate(-1px, 1px); }
+      100% { transform: translate(0, 0); }
+    }
+
+    .shake {
+      animation: screen-shake 0.5s ease-in-out;
+    }
+
+    /* ── RED FLASH OVERLAY ───────────────────────────────────── */
+    #alert-flash {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: radial-gradient(ellipse at center, rgba(239, 68, 68, 0.25) 0%, rgba(239, 68, 68, 0) 70%);
+      pointer-events: none;
+      opacity: 0;
+      z-index: 9999;
+      transition: opacity 0.1s ease;
+    }
+
+    #alert-flash.active {
+      animation: flash-pulse 0.8s ease-out forwards;
+    }
+
+    @keyframes flash-pulse {
+      0%   { opacity: 1; }
+      30%  { opacity: 0.7; }
+      100% { opacity: 0; }
+    }
+
+    /* ── RED BORDER FLASH on entire app ──────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      position: relative;
+      border: 2px solid transparent;
+      transition: border-color 0.3s;
+    }
+
+    #app.alert-border {
+      animation: border-flash 1s ease-out;
+    }
+
+    @keyframes border-flash {
+      0%   { border-color: var(--accent-red-bright); box-shadow: inset 0 0 30px rgba(239,68,68,0.15); }
+      100% { border-color: transparent; box-shadow: none; }
+    }
+
+    /* ── ALERT TOAST ─────────────────────────────────────────── */
+    #alert-toast {
+      position: fixed;
+      top: 70px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-120px);
+      z-index: 9998;
+      background: linear-gradient(135deg, rgba(239,68,68,0.95) 0%, rgba(185,28,28,0.95) 100%);
+      color: white;
+      padding: 12px 28px;
+      border-radius: 12px;
+      font-weight: 700;
+      font-size: 0.9rem;
+      letter-spacing: 0.02em;
+      backdrop-filter: blur(8px);
+      box-shadow: 0 8px 32px rgba(239,68,68,0.35), 0 0 0 1px rgba(255,255,255,0.1) inset;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      white-space: nowrap;
+    }
+
+    #alert-toast.show {
+      transform: translateX(-50%) translateY(0);
+    }
+
+    #alert-toast .toast-icon {
+      font-size: 1.2rem;
+    }
+
+    /* ── Top Bar ─────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      height: 60px;
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-glass);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      z-index: 1000;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      font-size: 1.25rem;
+      letter-spacing: -0.02em;
+    }
+
+    .logo-icon {
+      width: 32px;
+      height: 32px;
+      background: linear-gradient(135deg, var(--accent-blue), var(--accent-green));
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+    }
+
+    .header-center {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 16px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      transition: all 0.4s ease;
+    }
+
+    .status-pill.clear {
+      background: rgba(52, 211, 153, 0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+    }
+
+    .status-pill.hazard {
+      background: rgba(248, 113, 113, 0.15);
+      color: var(--accent-red);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+      animation: pulse-border 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse-border {
+      0%, 100% { border-color: rgba(248, 113, 113, 0.3); }
+      50% { border-color: rgba(248, 113, 113, 0.7); }
+    }
+
+    /* ── Stats Counters ──────────────────────────────────────── */
+    .stat-pills {
+      display: flex;
+      gap: 8px;
+    }
+
+    .stat-pill {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      color: var(--text-secondary);
+      transition: all 0.3s;
+    }
+
+    .stat-pill .stat-value {
+      color: var(--text-primary);
+      font-weight: 800;
+      min-width: 14px;
+      text-align: center;
+    }
+
+    .stat-pill.has-alerts {
+      border-color: rgba(248, 113, 113, 0.3);
+      color: var(--accent-red);
+    }
+
+    .stat-pill.has-alerts .stat-value {
+      color: var(--accent-red);
+    }
+
+    .header-meta {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .ws-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    .ws-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-red);
+      transition: background 0.3s;
+    }
+
+    .ws-dot.connected { background: var(--accent-green); box-shadow: 0 0 6px rgba(52,211,153,0.4); }
+
+    .sound-toggle {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      color: var(--text-secondary);
+      padding: 5px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: all 0.2s;
+    }
+
+    .sound-toggle:hover { border-color: var(--accent-blue); color: var(--accent-blue); }
+    .sound-toggle.active { border-color: var(--accent-green); color: var(--accent-green); }
+
+    /* ── Main Content ────────────────────────────────────────── */
+    main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Map Panel ───────────────────────────────────────────── */
+    .map-panel {
+      flex: 1;
+      position: relative;
+      min-width: 0;
+    }
+
+    #map { width: 100%; height: 100%; z-index: 1; }
+    .leaflet-container { background: #0b0f19; }
+
+    .zone-label {
+      background: rgba(11, 15, 25, 0.9);
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      color: #f1f5f9;
+      font-family: 'Inter', sans-serif;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 6px;
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+
+    .zone-label-hazard {
+      border-color: rgba(248, 113, 113, 0.6);
+      background: rgba(248, 113, 113, 0.2);
+      color: #f87171;
+      box-shadow: 0 2px 12px rgba(248,113,113,0.3);
+    }
+
+    @keyframes leaflet-pulse {
+      0%   { opacity: 0.5; }
+      50%  { opacity: 0.12; }
+      100% { opacity: 0.5; }
+    }
+
+    .hazard-pulse-circle { animation: leaflet-pulse 2s ease-in-out infinite; }
+
+    /* ── Feed Panel ──────────────────────────────────────────── */
+    .feed-panel {
+      width: 420px;
+      min-width: 420px;
+      display: flex;
+      flex-direction: column;
+      border-left: 1px solid var(--border-glass);
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+    }
+
+    .feed-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border-glass);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .feed-header h2 { font-size: 0.95rem; font-weight: 700; letter-spacing: -0.01em; }
+
+    .event-count {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+      background: var(--bg-glass);
+      padding: 3px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border-glass);
+    }
+
+    .feed-scroll {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .feed-scroll::-webkit-scrollbar { width: 6px; }
+    .feed-scroll::-webkit-scrollbar-track { background: transparent; }
+    .feed-scroll::-webkit-scrollbar-thumb { background: var(--border-glass); border-radius: 3px; }
+
+    /* ── Cards ────────────────────────────────────────────────── */
+    .card {
+      background: var(--bg-glass);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      animation: card-in 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .card:hover { border-color: rgba(148, 163, 184, 0.35); }
+
+    @keyframes card-in {
+      from { opacity: 0; transform: translateY(-12px) scale(0.95); }
+      to   { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .card-ingestion .card-zone {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .card-ingestion .card-text {
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      line-height: 1.45;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    /* ── Alert Cards ─────────────────────────────────────────── */
+    .card-alert {
+      border-width: 1px;
+      border-left-width: 4px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Glow effect behind alert cards */
+    .card-alert::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      border-radius: var(--radius);
+      opacity: 0;
+      transition: opacity 0.5s;
+      pointer-events: none;
+    }
+
+    .card-alert.severity-HIGH::before {
+      background: radial-gradient(ellipse at left center, rgba(248,113,113,0.12) 0%, transparent 70%);
+      opacity: 1;
+    }
+
+    .card-alert.severity-HIGH {
+      border-color: var(--accent-red);
+      background: rgba(248, 113, 113, 0.08);
+      box-shadow: 0 0 20px rgba(248,113,113,0.1);
+    }
+
+    .card-alert.severity-MEDIUM {
+      border-color: var(--accent-amber);
+      background: rgba(251, 191, 36, 0.08);
+      box-shadow: 0 0 15px rgba(251,191,36,0.08);
+    }
+
+    .card-alert.severity-LOW {
+      border-color: var(--accent-green);
+      background: rgba(52, 211, 153, 0.08);
+    }
+
+    /* Entry animation for HIGH alerts */
+    @keyframes alert-slam {
+      0%   { opacity: 0; transform: translateX(-20px) scale(1.04); }
+      50%  { transform: translateX(3px) scale(1.01); }
+      100% { opacity: 1; transform: translateX(0) scale(1); }
+    }
+
+    .card-alert.severity-HIGH {
+      animation: alert-slam 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    }
+
+    .alert-banner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .alert-banner-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .alert-icon { font-size: 1rem; }
+
+    .alert-zone { font-weight: 700; font-size: 0.88rem; }
+
+    .alert-time { font-size: 0.7rem; color: var(--text-secondary); }
+
+    .badge-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+      position: relative;
+      z-index: 1;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    .badge-category {
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent-blue);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+    }
+
+    .badge-severity-HIGH {
+      background: rgba(248, 113, 113, 0.15);
+      color: var(--accent-red);
+      border: 1px solid rgba(248, 113, 113, 0.3);
+    }
+
+    .badge-severity-MEDIUM {
+      background: rgba(251, 191, 36, 0.15);
+      color: var(--accent-amber);
+      border: 1px solid rgba(251, 191, 36, 0.3);
+    }
+
+    .badge-severity-LOW {
+      background: rgba(52, 211, 153, 0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(52, 211, 153, 0.3);
+    }
+
+    .alert-source {
+      font-size: 0.78rem;
+      color: var(--text-secondary);
+      line-height: 1.45;
+      font-style: italic;
+      position: relative;
+      z-index: 1;
+    }
+
+    .alert-confidence {
+      margin-top: 6px;
+      font-size: 0.7rem;
+      color: var(--text-secondary);
+      position: relative;
+      z-index: 1;
+    }
+
+    .confidence-bar {
+      margin-top: 4px;
+      height: 4px;
+      background: rgba(100, 116, 139, 0.2);
+      border-radius: 2px;
+      overflow: hidden;
+      position: relative;
+      z-index: 1;
+    }
+
+    .confidence-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.5s ease;
+    }
+
+    .severity-HIGH .confidence-fill { background: var(--accent-red); }
+    .severity-MEDIUM .confidence-fill { background: var(--accent-amber); }
+    .severity-LOW .confidence-fill { background: var(--accent-green); }
+
+    /* ── Empty state ─────────────────────────────────────────── */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      gap: 12px;
+      color: var(--text-secondary);
+    }
+
+    .empty-state-icon { font-size: 2rem; opacity: 0.5; }
+    .empty-state p { font-size: 0.85rem; }
+
+    /* ── Scanning line animation on map ──────────────────────── */
+    .scan-line {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, transparent 0%, var(--accent-blue) 50%, transparent 100%);
+      opacity: 0.4;
+      z-index: 500;
+      animation: scan-move 4s ease-in-out infinite;
+      pointer-events: none;
+    }
+
+    @keyframes scan-move {
+      0%   { top: 0%; }
+      50%  { top: 100%; }
+      100% { top: 0%; }
+    }
+
+    /* ── Focus & A11y ────────────────────────────────────────── */
+    :focus-visible {
+      outline: 2px solid var(--accent-blue);
+      outline-offset: 2px;
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px; height: 1px;
+      padding: 0; margin: -1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* ── Responsive ──────────────────────────────────────────── */
+    @media (max-width: 900px) {
+      main { flex-direction: column; }
+      .map-panel { height: 45vh; }
+      .feed-panel {
+        width: 100%; min-width: unset;
+        border-left: none;
+        border-top: 1px solid var(--border-glass);
+      }
+      .stat-pills { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Red Flash Overlay -->
+  <div id="alert-flash" aria-hidden="true"></div>
+
+  <!-- Toast Notification -->
+  <div id="alert-toast" role="alert" aria-live="assertive">
+    <span class="toast-icon">🚨</span>
+    <span id="toast-text">Alert incoming...</span>
+  </div>
+
+  <div id="app">
+    <!-- Top Bar -->
+    <header>
+      <div class="logo">
+        <div class="logo-icon" aria-hidden="true">⚡</div>
+        <span>TransitPulse</span>
+      </div>
+
+      <div class="header-center">
+        <div id="status-pill" class="status-pill clear" role="status" aria-live="polite">
+          <span aria-hidden="true">●</span>
+          <span id="status-text">Route Clear</span>
+        </div>
+        <div class="stat-pills">
+          <div class="stat-pill" id="stat-events">
+            <span>📡</span>
+            <span>Events</span>
+            <span class="stat-value" id="stat-events-val">0</span>
+          </div>
+          <div class="stat-pill" id="stat-alerts">
+            <span>🚨</span>
+            <span>Alerts</span>
+            <span class="stat-value" id="stat-alerts-val">0</span>
+          </div>
+          <div class="stat-pill" id="stat-zones">
+            <span>📍</span>
+            <span>Zones Hit</span>
+            <span class="stat-value" id="stat-zones-val">0</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="header-meta">
+        <button class="sound-toggle" id="sound-toggle" title="Toggle alert sound" aria-label="Toggle alert sound">🔇</button>
+        <div class="ws-status" aria-label="WebSocket connection status">
+          <span id="ws-dot" class="ws-dot" aria-hidden="true"></span>
+          <span id="ws-label">Disconnected</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main -->
+    <main>
+      <!-- Map -->
+      <section class="map-panel" aria-label="Map view of route and hazards">
+        <div class="scan-line" aria-hidden="true"></div>
+        <div id="map"></div>
+      </section>
+
+      <!-- Feed -->
+      <aside class="feed-panel" aria-label="Live event feed">
+        <div class="feed-header">
+          <h2>Live Feed</h2>
+          <span id="event-count" class="event-count">0 events</span>
+        </div>
+        <div id="feed-scroll" class="feed-scroll">
+          <div class="empty-state" id="empty-state">
+            <span class="empty-state-icon" aria-hidden="true">📡</span>
+            <p>Waiting for events…</p>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+  <script>
+    /* ── State ──────────────────────────────────────────────── */
+    let map = null;
+    const markers = {};
+    const circles = {};
+    let eventCount = 0;
+    let alertCount = 0;
+    let hazardActive = false;
+    let soundEnabled = false;
+    const affectedZones = new Set();
+
+    const ZONE_COORDS = {
+      "Silk Board Junction": [12.9170, 77.6230],
+      "Koramangala":         [12.9352, 77.6245],
+      "HSR Layout":          [12.9116, 77.6389],
+      "BTM Layout":          [12.9166, 77.6101],
+      "Electronic City":     [12.8456, 77.6603]
+    };
+
+    const SEVERITY_ICONS = { HIGH: "🔴", MEDIUM: "🟠", LOW: "🟢" };
+    const CATEGORY_ICONS = {
+      Flood: "🌊", Accident: "💥", Obstruction: "🪵",
+      Protest: "📢", HazMat: "☣️", Traffic: "🚗", None: "✅"
+    };
+
+    /* ── DOM refs ──────────────────────────────────────────── */
+    const feedScroll    = document.getElementById("feed-scroll");
+    const emptyState    = document.getElementById("empty-state");
+    const statusPill    = document.getElementById("status-pill");
+    const statusText    = document.getElementById("status-text");
+    const wsDot         = document.getElementById("ws-dot");
+    const wsLabel       = document.getElementById("ws-label");
+    const eventCountEl  = document.getElementById("event-count");
+    const alertFlash    = document.getElementById("alert-flash");
+    const alertToast    = document.getElementById("alert-toast");
+    const toastText     = document.getElementById("toast-text");
+    const appEl         = document.getElementById("app");
+    const soundToggle   = document.getElementById("sound-toggle");
+
+    /* ── Sound Toggle ─────────────────────────────────────── */
+    soundToggle.addEventListener("click", () => {
+      soundEnabled = !soundEnabled;
+      soundToggle.textContent = soundEnabled ? "🔊" : "🔇";
+      soundToggle.classList.toggle("active", soundEnabled);
+    });
+
+    /* ── Alert Sound (Web Audio API) ──────────────────────── */
+    function playAlertSound(severity) {
+      if (!soundEnabled) return;
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        if (severity === "HIGH") {
+          osc.frequency.value = 880;
+          osc.type = "sawtooth";
+          gain.gain.setValueAtTime(0.15, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.5);
+          /* Second beep */
+          const osc2 = ctx.createOscillator();
+          const gain2 = ctx.createGain();
+          osc2.connect(gain2);
+          gain2.connect(ctx.destination);
+          osc2.frequency.value = 1100;
+          osc2.type = "sawtooth";
+          gain2.gain.setValueAtTime(0.15, ctx.currentTime + 0.15);
+          gain2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.6);
+          osc2.start(ctx.currentTime + 0.15);
+          osc2.stop(ctx.currentTime + 0.6);
+        } else {
+          osc.frequency.value = 660;
+          osc.type = "sine";
+          gain.gain.setValueAtTime(0.1, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.3);
+        }
+      } catch (e) { /* Audio not supported */ }
+    }
+
+    /* ── Screen Effects ───────────────────────────────────── */
+    function triggerScreenShake() {
+      appEl.classList.remove("shake");
+      void appEl.offsetWidth; /* reflow to restart animation */
+      appEl.classList.add("shake");
+      setTimeout(() => appEl.classList.remove("shake"), 600);
+    }
+
+    function triggerRedFlash() {
+      alertFlash.classList.remove("active");
+      void alertFlash.offsetWidth;
+      alertFlash.classList.add("active");
+      setTimeout(() => alertFlash.classList.remove("active"), 900);
+    }
+
+    function triggerBorderFlash() {
+      appEl.classList.remove("alert-border");
+      void appEl.offsetWidth;
+      appEl.classList.add("alert-border");
+      setTimeout(() => appEl.classList.remove("alert-border"), 1100);
+    }
+
+    function showToast(zone, category, severity) {
+      const icon = severity === "HIGH" ? "🚨" : "⚠️";
+      toastText.textContent = `${category} detected at ${zone}`;
+      alertToast.querySelector(".toast-icon").textContent = icon;
+      alertToast.classList.add("show");
+      setTimeout(() => alertToast.classList.remove("show"), 3000);
+    }
+
+    /* ── Stats Update ─────────────────────────────────────── */
+    function updateStats() {
+      document.getElementById("stat-events-val").textContent = eventCount;
+      document.getElementById("stat-alerts-val").textContent = alertCount;
+      document.getElementById("stat-zones-val").textContent = affectedZones.size;
+
+      if (alertCount > 0) {
+        document.getElementById("stat-alerts").classList.add("has-alerts");
+      }
+    }
+
+    /* ── Leaflet Map ──────────────────────────────────────── */
+    function initMap() {
+      map = L.map("map", {
+        center: [12.9100, 77.6350],
+        zoom: 13,
+        zoomControl: true,
+        attributionControl: true
+      });
+
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+        subdomains: "abcd",
+        maxZoom: 19
+      }).addTo(map);
+
+      loadRouteMarkers();
+    }
+
+    function createZoneMarker(coords, zone, isHazard) {
+      const color = isHazard ? "#f87171" : "#38bdf8";
+      const marker = L.circleMarker(coords, {
+        radius: isHazard ? 14 : 10,
+        fillColor: color,
+        fillOpacity: 0.9,
+        color: "#0b0f19",
+        weight: 2,
+        alt: `Route zone: ${zone}`
+      }).addTo(map);
+
+      const labelClass = isHazard ? "zone-label zone-label-hazard" : "zone-label";
+      marker.bindTooltip(zone, {
+        permanent: true,
+        direction: "top",
+        offset: [0, -14],
+        className: labelClass
+      });
+
+      return marker;
+    }
+
+    async function loadRouteMarkers() {
+      try {
+        const res = await fetch("/route");
+        const data = await res.json();
+        data.zones.forEach(zone => {
+          const coords = ZONE_COORDS[zone];
+          if (!coords) return;
+          markers[zone] = createZoneMarker(coords, zone, false);
+        });
+      } catch (e) {
+        console.warn("Could not load route markers:", e);
+      }
+    }
+
+    function highlightHazardOnMap(zone) {
+      const coords = ZONE_COORDS[zone];
+      if (!coords || !map) return;
+
+      if (markers[zone]) {
+        map.removeLayer(markers[zone]);
+        markers[zone] = createZoneMarker(coords, zone, true);
+      }
+
+      if (!circles[zone]) {
+        const circle = L.circle(coords, {
+          radius: 350,
+          fillColor: "#f87171",
+          fillOpacity: 0.18,
+          color: "#f87171",
+          weight: 1,
+          opacity: 0.5,
+          className: "hazard-pulse-circle"
+        }).addTo(map);
+        circles[zone] = circle;
+      }
+    }
+
+    /* ── WebSocket ─────────────────────────────────────────── */
+    function connectWebSocket() {
+      const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+      const ws = new WebSocket(`${wsProto}//${location.host}/ws`);
+
+      ws.onopen = () => {
+        wsDot.classList.add("connected");
+        wsLabel.textContent = "Connected";
+      };
+
+      ws.onclose = () => {
+        wsDot.classList.remove("connected");
+        wsLabel.textContent = "Reconnecting…";
+        setTimeout(connectWebSocket, 2000);
+      };
+
+      ws.onerror = () => { ws.close(); };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "ingestion") renderIngestion(msg);
+          else if (msg.type === "alert") renderAlert(msg);
+        } catch (e) {
+          console.warn("Bad WS message:", e);
+        }
+      };
+    }
+
+    /* ── Render ────────────────────────────────────────────── */
+    function updateEventCount() {
+      eventCount++;
+      eventCountEl.textContent = `${eventCount} event${eventCount !== 1 ? "s" : ""}`;
+      if (emptyState) emptyState.remove();
+      updateStats();
+    }
+
+    function renderIngestion(msg) {
+      updateEventCount();
+      const card = document.createElement("div");
+      card.className = "card card-ingestion";
+      card.setAttribute("aria-live", "polite");
+
+      const truncText = msg.text.length > 120 ? msg.text.slice(0, 120) + "…" : msg.text;
+      card.innerHTML = `
+        <div class="card-zone">
+          <span aria-hidden="true">📍</span>
+          <span>${escapeHtml(msg.zone)}</span>
+        </div>
+        <div class="card-text">${escapeHtml(truncText)}</div>
+      `;
+      feedScroll.prepend(card);
+    }
+
+    function renderAlert(msg) {
+      alertCount++;
+      affectedZones.add(msg.zone);
+      updateEventCount();
+      setHazardActive();
+      highlightHazardOnMap(msg.zone);
+
+      /* Trigger effects based on severity */
+      if (msg.severity === "HIGH") {
+        triggerScreenShake();
+        triggerRedFlash();
+        triggerBorderFlash();
+      } else {
+        triggerBorderFlash();
+      }
+
+      showToast(msg.zone, msg.category, msg.severity);
+      playAlertSound(msg.severity);
+
+      const card = document.createElement("div");
+      card.className = `card card-alert severity-${msg.severity}`;
+      card.setAttribute("role", "alert");
+      card.setAttribute("aria-live", "assertive");
+
+      const sevIcon = SEVERITY_ICONS[msg.severity] || "⚠️";
+      const catIcon = CATEGORY_ICONS[msg.category] || "⚠️";
+
+      card.innerHTML = `
+        <div class="alert-banner">
+          <div class="alert-banner-left">
+            <span class="alert-icon" aria-hidden="true">${sevIcon}</span>
+            <span class="alert-zone">${escapeHtml(msg.zone)}</span>
+          </div>
+          <span class="alert-time">${escapeHtml(msg.timestamp)}</span>
+        </div>
+        <div class="badge-row">
+          <span class="badge badge-category" aria-label="Category: ${escapeHtml(msg.category)}">${catIcon} ${escapeHtml(msg.category)}</span>
+          <span class="badge badge-severity-${msg.severity}" aria-label="Severity: ${msg.severity}">${sevIcon} ${msg.severity}</span>
+        </div>
+        <div class="alert-source">"${escapeHtml(msg.source_text)}"</div>
+        <div class="alert-confidence">Confidence: ${(msg.confidence * 100).toFixed(0)}%</div>
+        <div class="confidence-bar"><div class="confidence-fill" style="width:${(msg.confidence * 100).toFixed(0)}%"></div></div>
+      `;
+      feedScroll.prepend(card);
+    }
+
+    function setHazardActive() {
+      if (hazardActive) return;
+      hazardActive = true;
+      statusPill.classList.remove("clear");
+      statusPill.classList.add("hazard");
+      statusText.textContent = "Hazard Active";
+      statusPill.querySelector("span:first-child").textContent = "⚠";
+    }
+
+    function escapeHtml(str) {
+      const d = document.createElement("div");
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    /* ── Init ──────────────────────────────────────────────── */
+    initMap();
+    connectWebSocket();
+  </script>
+</body>
+</html>
